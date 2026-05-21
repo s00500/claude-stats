@@ -1,17 +1,6 @@
-package main
+package stats
 
 import "encoding/json"
-
-type Config struct {
-	ClaudeDir     string
-	JSONOutput    bool
-	NoColor       bool
-	RawSecrets    bool
-	Overwrite     bool
-	FilterSession string
-	FilterProject string
-	Command       string
-}
 
 type HistoryEntry struct {
 	Display        string                 `json:"display"`

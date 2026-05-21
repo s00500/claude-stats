@@ -1,4 +1,4 @@
-package main
+package stats
 
 import (
 	"encoding/json"
@@ -21,7 +21,7 @@ const (
 
 var colorsEnabled = true
 
-func initColors(noColor bool) {
+func InitColors(noColor bool) {
 	if noColor || os.Getenv("NO_COLOR") != "" {
 		colorsEnabled = false
 	}
