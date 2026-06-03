@@ -124,15 +124,16 @@ type ProjectStats struct {
 }
 
 type SessionInfo struct {
-	SessionID    string
-	Project      string
-	Title        string
-	StartTime    string
-	MessageCount int
-	ToolCallCount int
-	SizeBytes    int64
-	Model        string
-	Version      string
+	SessionID     string `json:"sessionID"`
+	Project       string `json:"project"`
+	Title         string `json:"title"`
+	StartTime     string `json:"startTime"`
+	LastActivity  string `json:"lastActivity"`
+	MessageCount  int    `json:"messageCount"`
+	ToolCallCount int    `json:"toolCallCount"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	Model         string `json:"model"`
+	Version       string `json:"version"`
 }
 
 type StorageCategory struct {

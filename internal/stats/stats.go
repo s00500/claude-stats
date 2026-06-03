@@ -236,105 +236,86 @@ func projectFromMemoryPath(memPath string) string {
 	return filepath.Base(dir)
 }
 
-func ComputeSessionList(inv *FileInventory) ([]SessionInfo, error) {
-	type sessionAccum struct {
-		SessionInfo
-		sessions map[string]bool
-	}
-	sessions := make(map[string]*sessionAccum)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+// parseSessionsFromFile returns per-session aggregates derived from a single
+// .jsonl conversation file. Counts and SizeBytes reflect this file's
+// contribution only; callers must merge results when a session spans multiple
+// files.
+func parseSessionsFromFile(path string) (map[string]*SessionInfo, error) {
+	encodedProj := projectFromConvPath(path)
+	fsize := FileSize(path)
+	result := make(map[string]*SessionInfo)
 
-	for _, convFile := range inv.ConversationFiles {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(path string) {
-			defer wg.Done()
-			defer func() { <-sem }()
+	err := ParseConversationFileStreaming(path, func(cl ConversationLine) error {
+		sid := cl.SessionID
+		if sid == "" {
+			return nil
+		}
+		si, ok := result[sid]
+		if !ok {
+			si = &SessionInfo{
+				SessionID: sid,
+				Project:   DecodeProjectPath(encodedProj),
+				SizeBytes: fsize,
+			}
+			result[sid] = si
+		}
 
-			proj := projectFromConvPath(path)
-			fsize := FileSize(path)
-			local := make(map[string]*sessionAccum)
+		t := parseTimestamp(cl.Timestamp)
+		if !t.IsZero() {
+			formatted := t.Format("2006-01-02 15:04")
+			if si.StartTime == "" || formatted < si.StartTime {
+				si.StartTime = formatted
+			}
+			if si.LastActivity == "" || formatted > si.LastActivity {
+				si.LastActivity = formatted
+			}
+		}
 
-			_ = ParseConversationFileStreaming(path, func(cl ConversationLine) error {
-				sid := cl.SessionID
-				if sid == "" {
-					return nil
+		if cl.Version != "" {
+			si.Version = cl.Version
+		}
+
+		switch cl.Type {
+		case "user":
+			si.MessageCount++
+		case "assistant":
+			si.MessageCount++
+			if cl.Message != nil {
+				if cl.Message.Model != "" {
+					si.Model = cl.Message.Model
 				}
-				sa, ok := local[sid]
-				if !ok {
-					sa = &sessionAccum{}
-					sa.SessionID = sid
-					sa.Project = DecodeProjectPath(proj)
-					local[sid] = sa
-				}
-
-				dateStr := timestampToDateStr(cl.Timestamp)
-				if sa.StartTime == "" || (dateStr != "" && dateStr < sa.StartTime) {
-					t := parseTimestamp(cl.Timestamp)
-					if !t.IsZero() {
-						sa.StartTime = t.Format("2006-01-02 15:04")
-					}
-				}
-
-				if cl.Version != "" {
-					sa.Version = cl.Version
-				}
-
-				switch cl.Type {
-				case "user":
-					sa.MessageCount++
-				case "assistant":
-					sa.MessageCount++
-					if cl.Message != nil {
-						if cl.Message.Model != "" {
-							sa.Model = cl.Message.Model
-						}
-						if cl.Message.Content != nil {
-							var blocks []ContentBlock
-							if err := safeUnmarshalBlocks(cl.Message.Content, &blocks); err == nil {
-								for _, b := range blocks {
-									if b.Type == "tool_use" {
-										sa.ToolCallCount++
-									}
-								}
+				if cl.Message.Content != nil {
+					var blocks []ContentBlock
+					if err := safeUnmarshalBlocks(cl.Message.Content, &blocks); err == nil {
+						for _, b := range blocks {
+							if b.Type == "tool_use" {
+								si.ToolCallCount++
 							}
 						}
 					}
-				case "ai-title":
-					if cl.Slug != "" {
-						sa.Title = cl.Slug
-					}
-				}
-				return nil
-			})
-
-			mu.Lock()
-			for sid, sa := range local {
-				if existing, ok := sessions[sid]; ok {
-					existing.MessageCount += sa.MessageCount
-					existing.ToolCallCount += sa.ToolCallCount
-					existing.SizeBytes += fsize
-					if sa.Title != "" {
-						existing.Title = sa.Title
-					}
-					if sa.Model != "" {
-						existing.Model = sa.Model
-					}
-				} else {
-					sa.SizeBytes = fsize
-					sessions[sid] = sa
 				}
 			}
-			mu.Unlock()
-		}(convFile)
-	}
-	wg.Wait()
+		case "ai-title":
+			if cl.Slug != "" {
+				si.Title = cl.Slug
+			}
+		}
+		return nil
+	})
+	return result, err
+}
 
-	var result []SessionInfo
-	for _, sa := range sessions {
-		result = append(result, sa.SessionInfo)
+// ComputeSessionList loads (and incrementally refreshes) the session cache
+// rooted at claudeDir, then returns the flattened list sorted by StartTime
+// descending.
+func ComputeSessionList(claudeDir string, inv *FileInventory) ([]SessionInfo, error) {
+	cache, err := RefreshIncremental(claudeDir, inv)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]SessionInfo, 0, len(cache.Entries))
+	for _, e := range cache.Entries {
+		result = append(result, e.SessionInfo)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].StartTime > result[j].StartTime
